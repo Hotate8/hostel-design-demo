@@ -8,8 +8,8 @@
   const $$ = selector => [...document.querySelectorAll(selector)];
   const baseJob = {title:'短編映画の撮影助手を募集',occupation:'撮影助手',compensation:'20000',unit:' / 日',location:'東京都渋谷区',start:'2026-11-28',end:'2026-11-29',headcount:'1',description:'少人数のチームで、短編映画の撮影を支えていただきます。',notes:'',owner:'hiring',status:'公開中',charged:false};
   const profiles = {
-    hiring:{displayName:'小林 美香',email:'mika@example.test',location:'東京都渋谷区',occupation:'プロデューサー',company:'架空の制作チーム'},
-    applicant:{displayName:'青木 あき',email:'aki@example.test',location:'東京都世田谷区',occupation:'撮影助手'}
+    hiring:{displayName:'小林 美香',email:'mika@example.test',location:'東京都渋谷区',occupation:'Job title A',occupations:['Job title A'],company:'架空の制作チーム'},
+    applicant:{displayName:'青木 あき',email:'aki@example.test',location:'東京都世田谷区',occupation:'Job title B',occupations:['Job title B']}
   };
   function initial() { return {active:null,accounts:{},job:{...baseJob},application:null,messages:[],invoice:null,flash:'',target:null}; }
   let state = initial(), storageOK = true;
@@ -45,17 +45,29 @@
     state.active=name==='owner'?state.job.owner:name==='applicant'||name==='review'?'applicant':'hiring';
     if(name==='review') state.application={applicant:'applicant',status:'Accepted',introduction:'撮影助手として現場経験があります。両日参加できます。'};
     if(name==='insufficient') {state.accounts.hiring.balance=0;state.accounts.hiring.events=[];state.draft={...state.job};}
-    save();go(name==='owner'?'job-manage':name==='insufficient'?'job-review':name==='review'?'application-detail':name==='applicant'?'job-detail':'my-jobs');
+    save();go(name==='profile'?'my-profile':name==='owner'?'job-manage':name==='insufficient'?'job-review':name==='review'?'application-detail':name==='applicant'?'job-detail':'my-jobs');
   }
   $$('[data-scenario]').forEach(el=>el.addEventListener('click',()=>scenario(el.dataset.scenario)));
   if(!storageOK) $('#storage-error').hidden=false;
-  $('#account-label').textContent=account()?.profile.displayName || 'ゲスト';
+  $('#account-label').textContent=account()?(account().profile.displayName||'アカウント'):'ゲスト';
   if(state.flash) {$('#flash').textContent=state.flash;$('#flash').hidden=false;state.flash='';save();}
+  if(state.verificationNotice){
+    const toast=$('#verification-toast');toast.hidden=false;
+    state.verificationNotice=false;save();
+    window.setTimeout(()=>{toast.hidden=true;},5000);
+  }
+  $('#verification-toast-close').addEventListener('click',()=>{$('#verification-toast').hidden=true;});
+  if(['my-profile','profile-edit','profile-setup'].includes(page)&&!account()){state.target=page;go('login');return;}
   const protectedPages={'job-new':'job-new','job-review':'job-review','application-new':'application-new'};
   if(protectedPages[page] && !need(page)) return;
   if(['job-manage','job-edit','job-close','job-complete','applicants','applicant-detail','applicant-status'].includes(page) && !ownership(page)) return;
   const visibleJob = ['job-review','job-new'].includes(page) && state.draft ? state.draft : state.job;
   hydrate($$('[data-job]'),{...visibleJob,compensation:Number(visibleJob.compensation).toLocaleString('ja-JP')});
+  // Preserve already-entered legacy demo locations while the form now splits prefecture/city.
+  if(account()&&!account().profile.prefecture){
+    const legacy=(account().profile.location||'').match(/^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)(.*)$/);
+    if(legacy){account().profile.prefecture=legacy[1];account().profile.city=legacy[2];}
+  }
   hydrate($$('[data-profile]'),account()?.profile || profiles.applicant);
   $$('[data-cost]').forEach(el=>el.textContent=config.listingCost);
   $$('[data-bonus]').forEach(el=>el.textContent=config.registrationBonus);
@@ -63,18 +75,31 @@
   $$('[data-balance]').forEach(el=>el.textContent=account()?.balance ?? '—');
   if($('#after-balance')) $('#after-balance').textContent=Math.max(0,(account()?.balance ?? 0)-config.listingCost);
   if(page==='access') {$('#access-reason').textContent=!account()?'ログインすると、応募や募集公開を続けられます。':!account().verified?'続けるには、メール認証を完了してください。':'続けるには、表示名・活動拠点・職種を入力してください。';}
+  if(page==='verify') $('#verification-email').textContent=account()?.profile.email||'登録またはログインからお進みください。';
   if(page==='verify' && account() && !account().challenge) {account().challenge={issued:Date.now(),attempts:0,sends:[Date.now()]};save();}
   if(page==='public-profile') {
     const person=new URLSearchParams(location.search).get('person');
-    const data=person==='poster'?(state.accounts[state.job.owner]?.profile || profiles.hiring):person==='applicant'?(state.accounts[state.application?.applicant]?.profile || profiles.applicant):(account()?.profile || profiles.applicant);
+    const personId=person==='poster'?state.job.owner:person==='applicant'?(state.application?.applicant||'applicant'):(state.active||'applicant');
+    const data=state.accounts[personId]?.profile||(person==='poster'?profiles.hiring:profiles.applicant);
     hydrate($$('[data-public]'),data);
     const labels={introduction:'自己紹介',skills:'スキル',experience:'経験',credits:'作品実績',portfolio:'ポートフォリオ',workAreas:'稼働地域',company:'会社・制作名',website:'会社Website',companyIntroduction:'会社紹介',companyCredits:'会社の制作実績'};
-    Object.entries(labels).forEach(([key,label])=>{if(data[key]) {$('#public-sections').append(node('h2',label),node('p',data[key]));}});
+    Object.entries(labels).forEach(([key,label])=>{if(typeof data[key]==='string'&&data[key].trim()) {$('#public-sections').append(node('h2',label),node('p',data[key]));}});
+    const hasJob=personId===state.job.owner&&!state.job.removed;
+    $('#public-profile-jobs').hidden=!hasJob;
+    if(hasJob)$('#public-profile-job-link').textContent=state.job.title+' →';
+    $('#public-profile-owner-return').hidden=personId!==state.active;
   }
   if(page==='points-history') {
     const box=$('#point-events');
     if(!account()?.events.length) box.append(node('p','まだ付与・利用履歴がありません。'));
     else [...account().events].reverse().forEach(event=>{const card=node('section','','card');card.append(node('small',new Date(event.date).toLocaleString('ja-JP')),node('h2',event.label),node('p',`${event.kind==='grant'?'+':'−'}${event.amount} points（暫定例）`));if(event.kind==='spend')card.append(anchor('関連する募集を見る →','job-detail.html'));box.append(card);});
+  }
+  if(page==='my-profile'){
+    const profile=account()?.profile;
+    if(profile){
+      const labels={introduction:'自己紹介',skills:'スキル',experience:'経験',credits:'作品実績',portfolio:'ポートフォリオURL',workAreas:'稼働地域',company:'会社・制作名',website:'会社Website',companyIntroduction:'会社紹介',companyCredits:'会社の制作実績',email:'ログインメール（本人のみ）',legalName:'本名（本人のみ）'};
+      Object.entries(labels).forEach(([key,label])=>{if(typeof profile[key]==='string'&&profile[key].trim())$('#own-profile-sections').append(node('h2',label),node('p',profile[key]));});
+    }
   }
   const application=state.application;
   $$('[data-application-status]').forEach(el=>el.textContent=application?.status || '応募はありません');
@@ -313,38 +338,171 @@
       },700);
     });
   }
+  let verificationPending=false;
+  let resendTimer=null;
+  function updateResendCountdown(){
+    const button=$('#verification-resend');if(!button)return;
+    const challenge=account()?.challenge;
+    const issued=challenge?.issued;
+    const now=Date.now();
+    const limitMessage='送信回数の上限に達しました。しばらくしてからお試しください。';
+    const limited=(challenge?.sends||[]).filter(time=>now-time<3600000).length>=5;
+    const seconds=issued===undefined?0:Math.max(0,Math.ceil((60000-(now-issued))/1000));
+    button.disabled=verificationPending||limited||seconds>0;
+    button.textContent=seconds>0?`再送する（あと${seconds}秒）`:'コードを再送する';
+    if(limited)$('#resend-status').textContent=limitMessage;
+    else if($('#resend-status').textContent===limitMessage)$('#resend-status').textContent='';
+  }
+  function startResendCountdown(){
+    updateResendCountdown();
+    if(page==='verify'&&resendTimer===null)resendTimer=window.setInterval(updateResendCountdown,1000);
+  }
+  if(page==='verify'){
+    startResendCountdown();
+    window.addEventListener('pagehide',()=>{window.clearInterval(resendTimer);resendTimer=null;});
+    window.addEventListener('pageshow',startResendCountdown);
+  }
+  const codeBoxes=$$('[data-code-digit]');
+  const verifyForm=$('form[data-action=verify]');
+  const verifySubmit=verifyForm?.querySelector('button');
+  function updateVerifyButton(){
+    if(!verifySubmit)return;
+    verifySubmit.disabled=verificationPending||!codeBoxes.every(input=>/^[0-9]$/.test(input.value))||(account()?.challenge?.attempts??0)>=5;
+    verifySubmit.textContent=verificationPending?'認証中…':'認証する';
+    codeBoxes.forEach(input=>{input.readOnly=verificationPending;});
+    verifyForm.setAttribute('aria-busy',String(verificationPending));
+  }
+  updateVerifyButton();
+  function fillCode(start,text) {
+    const digits=text.replace(/[^0-9]/g,'').slice(0,6-start);
+    if(!digits)return;
+    [...digits].forEach((digit,offset)=>{codeBoxes[start+offset].value=digit;});
+    codeBoxes[Math.min(start+digits.length,5)].focus();
+    updateVerifyButton();
+  }
+  codeBoxes.forEach((input,index)=>{
+    input.addEventListener('focus',()=>input.select());
+    input.addEventListener('input',()=>{
+      const digits=input.value.replace(/[^0-9]/g,'');
+      input.value=digits.slice(0,1);
+      if(digits.length>1)fillCode(index,digits);
+      else if(digits&&index<5)codeBoxes[index+1].focus();
+      updateVerifyButton();
+    });
+    input.addEventListener('paste',event=>{event.preventDefault();fillCode(index,event.clipboardData?.getData('text')||'');});
+    input.addEventListener('keydown',event=>{
+      if(event.key==='Backspace'&&!input.value&&index>0){event.preventDefault();codeBoxes[index-1].value='';codeBoxes[index-1].focus();updateVerifyButton();}
+      if(event.key==='ArrowLeft'&&index>0){event.preventDefault();codeBoxes[index-1].focus();}
+      if(event.key==='ArrowRight'&&index<5){event.preventDefault();codeBoxes[index+1].focus();}
+    });
+  });
+  function updateOccupationSummary(){
+    const summary=$('#occupation-summary');if(!summary)return;
+    const selected=$$('[data-occupation-option]').filter(option=>option.checked).map(option=>option.value);
+    summary.textContent=selected.length?selected.join('、'):'職種を選択（複数可）';
+  }
+  $$('[data-occupation-option]').forEach(option=>option.addEventListener('change',updateOccupationSummary));
+  function setupProfileForm(form,action){
+    let pending=false;
+    const submit=form.querySelector('button');
+    const saveError=form.querySelector('.error');
+    const fields=['displayName','prefecture','city','occupations','introduction','skills','experience','credits','portfolio','workAreas','company','website','companyIntroduction','companyCredits','legalName'];
+    const touched=new Set();
+    const get=name=>form.elements.namedItem(name);
+    const selected=()=>$$('[data-occupation-option]').filter(option=>option.checked).map(option=>option.value);
+    const profile=account()?.profile;
+    if(profile)Object.entries(profile).forEach(([name,value])=>{const input=get(name);if(input&&!Array.isArray(value)&&['INPUT','SELECT','TEXTAREA'].includes(input.tagName))input.value=value;});
+    $$('[data-occupation-option]').forEach(option=>{option.checked=(profile?.occupations||[]).includes(option.value);});updateOccupationSummary();
+    function errors(){
+      const messages={};
+      const prefectures=new Set($$('[data-prefecture-option]').map(option=>option.value));
+      if(!get('displayName').value.trim())messages.displayName='表示名を入力してください。';
+      if(!prefectures.has(get('prefecture').value))messages.prefecture='都道府県を選択してください。';
+      if(!selected().length)messages.occupations='職種を一つ以上選択してください。';
+      for(const name of ['portfolio','website']){const input=get(name);if(input&&input.value.trim()&&!input.checkValidity())messages[name]='URLを正しく入力してください。';}
+      return messages;
+    }
+    function render(){
+      const messages=errors();
+      fields.forEach(name=>{const box=$('#profile-'+name+'-error');if(!box)return;const message=touched.has(name)?messages[name]||'':'';box.textContent=message;box.hidden=!message;const input=get(name);if(input?.setAttribute)input.setAttribute('aria-invalid',String(!!message));if(name==='occupations')$$('[data-occupation-option]').forEach(option=>option.setAttribute('aria-invalid',String(!!message)));});
+      return messages;
+    }
+    fields.filter(name=>name!=='occupations').forEach(name=>{const input=get(name);if(!input)return;input.addEventListener('blur',()=>{touched.add(name);render();});input.addEventListener('input',render);input.addEventListener('change',render);});
+    $$('[data-occupation-option]').forEach(option=>{option.addEventListener('change',()=>{touched.add('occupations');updateOccupationSummary();render();});option.addEventListener('blur',()=>{touched.add('occupations');render();});});
+    render();
+    form.addEventListener('submit',event=>{
+      event.preventDefault();if(pending)return;fields.forEach(name=>touched.add(name));
+      if(Object.keys(render()).length)return;
+      if(!account()){state.target=page;go('login');return;}
+      const data=Object.fromEntries(new FormData(form));
+      data.occupations=selected();data.occupation=data.occupations.join('、');
+      data.displayName=data.displayName.trim();data.city=(data.city||'').trim();data.location=data.prefecture+data.city;
+      for(const name of fields){if(typeof data[name]==='string'&&!data[name].trim())data[name]='';}
+      const commit=()=>{Object.assign(account().profile,data);account().complete=true;if(action==='profile')finishAccount();else go('my-profile','プロフィールを更新しました。');};
+      if(action==='profile'){commit();return;}
+      function pendingControls(value){
+        pending=value;submit.disabled=value;form.setAttribute('aria-busy',String(value));
+        fields.filter(name=>name!=='occupations').forEach(name=>{const input=get(name);if(!input)return;if(input.tagName==='SELECT')input.disabled=value;else input.readOnly=value;});
+        $$('[data-occupation-option]').forEach(option=>{option.disabled=value;});
+      }
+      saveError.hidden=true;pendingControls(true);
+      window.setTimeout(()=>{
+        if($('#profile-save-outcome').value==='session-expired'){
+          pendingControls(false);state.active=null;state.target=null;go('login');return;
+        }
+        if($('#profile-save-outcome').value==='failure'){
+          $('#profile-save-outcome').value='success';pendingControls(false);
+          saveError.textContent='保存できませんでした。もう一度お試しください。';saveError.hidden=false;return;
+        }
+        pendingControls(false);commit();
+      },700);
+    });
+  }
   $$('form').forEach(form=>{
     const action=form.dataset.action;
+    if(action==='profile'||action==='profile-edit'){setupProfileForm(form,action);return;}
     if(action==='register'){setupRegistration(form);return;}
     if(action==='reset-password'){setupPasswordReset(form);return;}
     if(action==='login'||action==='reset-request'){setupAuthRequest(form,action==='login');return;}
     let values=null;
-    if(['profile','profile-edit'].includes(action)) values=account()?.profile;
     if(action==='job-draft') values=state.draft;
     if(action==='job-edit') values=state.job;
     if(action==='invoice') values=state.invoice;
     if(action==='preferences') $$('input[type=checkbox]').forEach(input=>{if(account()?.preferences)input.checked=!!account().preferences[input.name];});
-    if(values) Object.entries(values).forEach(([key,value])=>{const input=form.elements.namedItem(key);if(input && ['INPUT','TEXTAREA','SELECT'].includes(input.tagName))input.value=value;});
+    if(values) Object.entries(values).forEach(([key,value])=>{const input=form.elements.namedItem(key);if(input && !Array.isArray(value) && ['INPUT','TEXTAREA','SELECT'].includes(input.tagName))input.value=value;});
     form.addEventListener('submit',event=>{
       event.preventDefault();
       if(!form.reportValidity()) return;
-      const data=Object.fromEntries(new FormData(form));
-      switch(action) {
-        case 'verify': {
-          if(!account()) {fail('新規登録またはログインからお進みください。',form);break;}
+      const formData=new FormData(form);
+      const data=Object.fromEntries(formData);
+      if(action==='verify'){
+        if(verificationPending)return;
+        const code=codeBoxes.map(input=>input.value).join('');
+        if(!/^[0-9]{6}$/.test(code)){fail('6桁の確認コードを入力してください。',form);return;}
+        verificationPending=true;updateVerifyButton();updateResendCountdown();
+        window.setTimeout(()=>{
+          try {
+          if(!/^[0-9]{6}$/.test(code)){fail('6桁の確認コードを入力してください。',form);return;}
+          if(!account()) {fail('新規登録またはログインからお進みください。',form);return;}
+          if($('#verification-outcome')?.value==='failure'){
+            $('#verification-outcome').value='success';fail('確認できませんでした。もう一度お試しください。',form);return;
+          }
           const challenge=account().challenge;
-          if(challenge.attempts>=5){fail('試行回数の上限です。新しいコードを要求してください。',form);break;}
-          if(Date.now()-challenge.issued>600000){fail('有効期限が切れています。コードを再送してください。',form);break;}
-          if(challenge.used){fail('このコードは使用済みです。',form);break;}
-          if(data.code!=='042817') {challenge.attempts++;save();fail(challenge.attempts>=5?'5回の誤入力で無効になりました。コードを再送してください。':'コードが一致しません。',form);break;}
-          challenge.used=true;account().verified=true;go('verified');break;
-        }
-        case 'profile':case 'profile-edit': {
-          if(!account()){state.target=page;go('login');break;}
-          if(!data.displayName.trim()||!data.location.trim()||!data.occupation.trim()){fail('基本の3項目を入力してください。',form);break;}
-          Object.assign(account().profile,data);account().complete=true;
-          if(action==='profile') finishAccount();else go('public-profile','プロフィールを更新しました。');break;
-        }
+          if(challenge.attempts>=5){fail('確認コードが無効になりました。再送してください。',form);return;}
+          if(Date.now()-challenge.issued>=600000){fail('確認コードの有効期限が切れました。再送してください。',form);return;}
+          if(challenge.used){fail('このコードは使用済みです。',form);return;}
+          if(code!=='042817') {challenge.attempts++;save();updateVerifyButton();fail(challenge.attempts>=5?'確認コードが無効になりました。再送してください。':'確認コードが正しくありません。',form);return;}
+          challenge.used=true;account().verified=true;state.verificationNotice=true;
+          if(account().complete){const target=state.target;state.target=null;go(target||'home');}
+          else go('profile-setup');
+          return;
+          } finally {
+            verificationPending=false;updateVerifyButton();updateResendCountdown();
+          }
+        },700);
+        return;
+      }
+      switch(action) {
         case 'password-change':
           if(data.password!==data.confirmation){fail('パスワードが一致しません。',form);break;}
           form.reset();go('settings','変更完了画面のデモです。パスワードは保存・変更していません。');break;
@@ -380,14 +538,22 @@
   $$('button[data-action]').forEach(button=>button.addEventListener('click',()=>{
     switch(button.dataset.action) {
       case 'back-register':state.registrationEmail=account()?.profile.email||state.registrationEmail||'';state.active=null;go('register');break;
-      case 'skip':go(state.target?'access':'job-list','閲覧はできます。応募・公開の前には基本プロフィールを入力してください。');break;
+      case 'skip':go('job-list','閲覧はできます。応募・公開の前には基本プロフィールを入力してください。');break;
       case 'resend': {
+        if(verificationPending)break;
         if(!account()) {go('register');break;}
         const now=Date.now(), previous=account().challenge;
         const sends=(previous?.sends||[]).filter(time=>now-time<3600000);
         if(previous && now-previous.issued<60000){$('#resend-status').textContent='前回の送信から60秒以上あけてください。';break;}
-        if(sends.length>=5){$('#resend-status').textContent='1時間の送信上限（初回を含む5回）です。時間をあけてください。';break;}
-        account().challenge={issued:now,attempts:0,sends:[...sends,now]};save();$('#resend-status').textContent='デモメールを更新しました。実装では新しいランダムコードに置き換えます。このデモの固定コードは042817です。';break;
+        if(sends.length>=5){$('#resend-status').textContent='送信回数の上限に達しました。しばらくしてからお試しください。';updateResendCountdown();break;}
+        if($('#verification-resend-outcome')?.value==='failure'){
+          $('#verification-resend-outcome').value='success';$('#resend-status').textContent='送信できませんでした。もう一度お試しください。';break;
+        }
+        account().challenge={issued:now,attempts:0,sends:[...sends,now]};save();updateResendCountdown();
+        codeBoxes.forEach(input=>{input.value='';});
+        const error=verifyForm?.querySelector('.error');if(error){error.textContent='';error.hidden=true;}
+        updateVerifyButton();codeBoxes[0]?.focus();
+        $('#resend-status').textContent='確認コードを再送しました。';updateResendCountdown();break;
       }
       case 'publish': {
         if(!need('job-review'))break;
